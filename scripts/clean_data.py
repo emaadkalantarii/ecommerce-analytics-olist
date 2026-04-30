@@ -56,7 +56,9 @@ def clean_products(engine):
 
 def clean_order_items(engine):
     df = pd.read_sql('SELECT * FROM order_items', engine)
+    delivered_orders = pd.read_sql('SELECT order_id FROM orders_clean', engine)
 
+    df = df[df['order_id'].isin(delivered_orders['order_id'])].copy()
     df = df[df['price'] > 0].copy()
     df = df[df['freight_value'] >= 0].copy()
 
@@ -80,6 +82,15 @@ def clean_geolocation(engine):
     df.to_sql('geolocation_clean', engine, if_exists='replace', index=False)
     print(f'geolocation_clean: {len(df):,} rows')
 
+def clean_payments(engine):
+    df = pd.read_sql('SELECT * FROM order_payments', engine)
+
+    df = df[~((df['payment_value'] == 0) & (df['payment_type'] != 'voucher'))].copy()
+    df = df[df['payment_type'] != 'not_defined'].copy()
+
+    df.to_sql('order_payments_clean', engine, if_exists='replace', index=False)
+    print(f'order_payments_clean: {len(df):,} rows')
+
 if __name__ == '__main__':
     engine = get_engine()
     print('Starting data cleaning...\n')
@@ -88,4 +99,5 @@ if __name__ == '__main__':
     clean_order_items(engine)
     clean_reviews(engine)
     clean_geolocation(engine)
+    clean_payments(engine)
     print('\nAll cleaning complete.')
