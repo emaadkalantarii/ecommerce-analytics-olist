@@ -2,9 +2,5 @@ streamlit==1.45.0
 pandas==2.2.3
 matplotlib==3.10.3
 seaborn==0.13.2
-sqlalchemy==2.0.40
-psycopg2-binary==2.9.10
-python-dotenv==1.1.0
 numpy==2.2.5
-boto3==1.37.23
 openpyxl==3.1.5
