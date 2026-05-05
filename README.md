@@ -18,7 +18,9 @@ End-to-end data analytics pipeline analyzing **96,457 delivered orders** from th
 - [Key Findings](#key-findings)
 - [Architecture](#architecture)
 - [Tech Stack](#tech-stack)
+- [Pipeline Walkthrough](#pipeline-walkthrough)
 - [Data Quality](#data-quality)
+- [AWS S3 Integration](#aws-s3-integration)
 - [Python Visualizations](#python-visualizations)
 - [Tableau Dashboard](#tableau-dashboard)
 - [Power BI Dashboard](#power-bi-dashboard)
@@ -81,9 +83,9 @@ upload_to_s3.py
         │
         ▼
 load_to_postgres.py
-  - Drops and recreates schema with correct data types
+  - Drops and recreates schema with correct data types and foreign keys
   - Loads all 9 tables into PostgreSQL in dependency order
-  - Enforces foreign key relationships across tables
+  - Raw tables preserved exactly as received (Bronze layer)
         │
         ▼
 clean_data.py
@@ -153,22 +155,87 @@ GitHub Actions CI/CD
 
 ---
 
+## Pipeline Walkthrough
+
+### Phase 1 — Raw Data Upload (`upload_to_s3.py`)
+
+Uploads all 9 raw Olist CSV files to an AWS S3 bucket using boto3. Files are placed under a `raw/` prefix, forming the Bronze layer of the data lake. Credentials are loaded from `.env` via python-dotenv. This step is optional — the pipeline can run entirely locally without AWS credentials by skipping this script.
+
+### Phase 2 — Database Ingestion (`load_to_postgres.py`)
+
+Drops all existing tables in reverse dependency order using `CASCADE` to handle foreign key constraints cleanly, then recreates the full schema from `sql/create_tables.sql`. Tables are loaded in dependency order — parent tables (customers, sellers, products) before child tables (orders, order_items, order_payments, order_reviews) — to satisfy foreign key constraints during insertion. The raw tables are never modified after loading, preserving the original data exactly as received.
+
+### Phase 3 — Data Cleaning (`clean_data.py`)
+
+Produces 6 clean tables from the 9 raw tables using three distinct missing value strategies depending on context. Orders are filtered to delivered status only and enriched with two engineered columns: `delivery_days` (integer difference between purchase and delivery timestamps) and `is_late` (boolean flag comparing actual delivery against the estimated date). Products have the two column name typos corrected (`lenght` → `length`) and 610 null category names filled with `'unknown'` rather than dropped. Order items are filtered to delivered orders only. Reviews retain null comment text as meaningful absence but drop null scores. Geolocation is deduplicated to one coordinate per zip code prefix. Payments remove three zero-value non-voucher rows as data entry errors.
+
+### Phase 4 — Data Quality Validation (`validate_data.py`)
+
+Runs 18 automated SQL-based checks organized into four categories: raw layer checks (duplicates, price ranges, timestamp consistency), clean layer checks (status filter, delivery days, null enforcement), referential integrity checks (orphaned foreign keys across three relationships), and business logic checks (minimum volume thresholds, date coverage, payment values). The validator prints a pass/fail result for each check and exits with code 1 if any check fails, which blocks the CI/CD pipeline from passing.
+
+### Phase 5 — Visualization Generation (`generate_visualizations.py`)
+
+Queries the clean PostgreSQL tables directly and produces 7 Matplotlib/Seaborn charts saved as 150 DPI PNG files. Each chart is built from a dedicated SQL query rather than loading the full dataset into memory, keeping memory usage low and ensuring the charts always reflect the current state of the database.
+
+### Phase 6 — Dashboard Data Export (`export_dashboard_data.py`)
+
+Joins all 6 clean tables into a single flat CSV (`dashboard_data.csv`) with 21 columns covering order metadata, customer geography, product category, pricing, review score, payment method, and geolocation coordinates. Also produces two pre-aggregated summary tables — `monthly_summary.csv` and `state_summary.csv` — which the Streamlit app and Power BI dashboard read directly for fast loading without re-joining at runtime.
+
+### Phase 7 — SQL Business Analysis (`sql/analysis_queries.sql`)
+
+Contains 8 standalone SQL queries that answer specific business questions. Each query is documented with a comment explaining the business question it addresses. These queries are designed to run directly in any PostgreSQL client for ad-hoc analysis and serve as the analytical layer that stakeholders would interact with in a real company context.
+
+---
+
 ## Data Quality
 
-Real missing value and data quality decisions made during the pipeline:
+Real missing value and data quality decisions made during the pipeline, each with an explicit reason:
 
 | Issue | Table | Decision | Reason |
 |---|---|---|---|
 | Orders with non-delivered status | orders | Filter to delivered only | Delivery metrics only meaningful for completed orders |
 | Null `order_delivered_customer_date` | orders | Drop rows | Cannot compute delivery_days without delivery date |
 | 610 null `product_category_name` | products | Fill with `'unknown'` | Dropping would silently remove real order revenue |
-| Column name typos (`lenght`) | products | Rename in clean layer | Preserve raw data exactly; fix in transformation |
+| Column name typos (`lenght`) | products | Rename in clean layer only | Preserve raw data exactly; fix in transformation |
 | Null review comment text (58,247 rows) | order_reviews | Retain as null | Null comment is meaningful — customer gave score only |
 | Null review scores | order_reviews | Drop rows | Score is the primary metric; no score = unusable row |
-| 2,479 order items from non-delivered orders | order_items | Filter to delivered | Aligns with orders_clean scope |
+| 2,479 order items from non-delivered orders | order_items | Filter to delivered | Aligns scope with orders_clean |
 | 3 zero-value non-voucher payments | order_payments | Remove | Data entry errors — impossible in real transactions |
-| 1M+ geolocation rows per zip code | geolocation | Deduplicate to one per zip | Prevents row explosion on joins |
+| 1M+ geolocation rows per zip code | geolocation | Deduplicate to one per zip | Prevents row explosion on downstream joins |
 | Zero or negative prices | order_items | Remove | Impossible in real e-commerce transactions |
+
+---
+
+## AWS S3 Integration
+
+The pipeline uses AWS S3 as a cloud data lake for raw file storage, reflecting how real analytics teams manage source data at scale.
+
+**S3 Bucket Structure:**
+
+```
+s3://your-bucket-name/
+└── raw/
+    ├── olist_customers_dataset.csv
+    ├── olist_geolocation_dataset.csv
+    ├── olist_order_items_dataset.csv
+    ├── olist_order_payments_dataset.csv
+    ├── olist_order_reviews_dataset.csv
+    ├── olist_orders_dataset.csv
+    ├── olist_products_dataset.csv
+    ├── olist_sellers_dataset.csv
+    └── product_category_name_translation.csv
+```
+
+**Configuration — add to `.env`:**
+
+```env
+AWS_BUCKET_NAME=your-bucket-name
+AWS_REGION=eu-west-1
+AWS_ACCESS_KEY_ID=your_access_key_id
+AWS_SECRET_ACCESS_KEY=your_secret_access_key
+```
+
+**S3 is optional.** If you do not have AWS credentials, skip `upload_to_s3.py` and run the rest of the pipeline using local files only — all other scripts read from `data/raw/` directly and do not require S3 access.
 
 ---
 
@@ -188,7 +255,7 @@ A dual-axis chart combining blue bars for monthly product revenue (left axis) wi
 ### 2 — Top 15 Product Categories by Revenue
 ![Top Categories](docs/visualizations/02_top_categories.png)
 
-A horizontal bar chart ranking the 15 highest-revenue product categories with exact revenue labels on each bar. Health & Beauty leads at R$1.24M followed closely by Watches & Gifts at R$1.17M. The top 3 categories together account for a significant portion of total revenue — a concentration that represents both an opportunity and a risk. A business analyst would flag this to inform category diversification strategy and inventory prioritization decisions.
+A horizontal bar chart ranking the 15 highest-revenue product categories with exact revenue labels on each bar. Health & Beauty leads at R$1.24M followed closely by Watches & Gifts at R$1.17M. The top 3 categories together account for a significant share of total revenue — a concentration that represents both a strength and a risk. A business analyst would flag this to inform category diversification strategy and inventory prioritization decisions.
 
 ---
 
@@ -202,7 +269,7 @@ A bar chart showing the late delivery rate for each Brazilian state, color-coded
 ### 4 — Impact of Late Delivery on Customer Review Scores
 ![Review vs Lateness](docs/visualizations/04_review_vs_lateness.png)
 
-Two side-by-side charts that together quantify the business cost of late delivery. The left bar chart shows the average review score gap: on-time orders receive 4.29 stars versus 2.57 for late orders — a 40% drop. The right grouped bar chart shows the full score distribution, revealing that 46% of late orders receive a 1-star review compared to only 7% of on-time orders. This pairing connects the operational delivery problem to its financial and reputational consequence, making the case for logistics investment concrete and quantifiable.
+Two side-by-side charts that together quantify the business cost of late delivery. The left bar chart shows the average review score gap: on-time orders receive 4.29 stars versus 2.57 for late orders — a 40% drop in satisfaction. The right grouped bar chart shows the full score distribution, revealing that 46% of late orders receive a 1-star review compared to only 7% of on-time orders. This pairing connects the operational delivery problem (Chart 3) to its financial and reputational consequence, making the case for logistics investment concrete and quantifiable.
 
 ---
 
@@ -216,40 +283,40 @@ Two charts displayed together: a pie chart showing the transaction share by paym
 ### 6 — Order Volume by Hour of Day
 ![Hourly Orders](docs/visualizations/06_hourly_orders.png)
 
-A bar chart showing total order count for each hour of the day, with coral bars marking peak hours (10:00–21:00) and blue bars marking off-peak hours. Order volume rises sharply from 9am, sustains a high plateau throughout the afternoon and evening, and drops significantly after 10pm. This pattern has direct implications for customer support staffing, marketing campaign scheduling, and server capacity planning.
+A bar chart showing total order count for each hour of the day, with coral bars marking peak hours (10:00–21:00) and blue bars marking off-peak hours. Order volume rises sharply from 9am, sustains a high plateau throughout the afternoon and evening, and drops significantly after 10pm. The overnight hours (1:00–6:00) are dramatically lower. This pattern has direct implications for customer support staffing, marketing campaign scheduling, and server capacity planning.
 
 ---
 
 ### 7 — Customer Review Score Distribution
 ![Review Distribution](docs/visualizations/07_review_distribution.png)
 
-A bar chart showing the count of orders at each review score from 1 to 5, color-coded by sentiment: green for positive (4–5 stars), orange for neutral (3 stars), and coral for negative (1–2 stars). The distribution is strongly right-skewed — 57,328 orders received 5 stars. However, 11,424 orders received 1 star, which is disproportionately large relative to scores 2–4. The bimodal pattern suggests customers tend to review only when they have a strongly positive or strongly negative experience.
+A bar chart showing the count of orders at each review score from 1 to 5, color-coded by sentiment: green for positive (4–5 stars), orange for neutral (3 stars), and coral for negative (1–2 stars). The distribution is strongly right-skewed — 57,328 orders received 5 stars, making it the largest single group. However, 11,424 orders received 1 star, which is disproportionately large relative to scores 2–4. The bimodal pattern suggests customers tend to review only when they have a strongly positive or strongly negative experience — a common e-commerce pattern with implications for review solicitation strategy.
 
 ---
 
 ## Tableau Dashboard
 
-Four-view interactive dashboard published at the live URL above, combining revenue trends, product performance, geographic delivery analysis, and customer satisfaction in a single view.
+Four-view interactive dashboard published at the live URL above. The workbook file is also saved at `dashboard_tableau/olist_dashboard.twbx`.
 
 ![Tableau Dashboard](docs/visualizations/streamlit_screenshots/page1_overview.png)
 
-The dashboard presents four complementary analytical views: a dual-axis revenue and order volume trend across the full 2016–2018 period (top), a ranked horizontal bar chart of top product categories by revenue (bottom left), a gradient-colored bar chart of late delivery rates by state where red indicates worst-performing states (bottom center), and a side-by-side bar chart comparing average review scores for late versus on-time deliveries (bottom right). Together these four views form a complete analytical narrative — where is the business growing, which products drive it, where operations are failing, and what that failure costs in customer satisfaction.
+The dashboard presents four complementary analytical views: a dual-axis revenue and order volume trend across the full 2016–2018 period (top), a ranked horizontal bar chart of top product categories by revenue with dollar labels (bottom left), a gradient-colored bar chart of late delivery rates by state where darker red indicates worst-performing states (bottom center), and a side-by-side bar chart comparing average review scores for late versus on-time deliveries with green/red color coding (bottom right). Together these four views form a complete analytical narrative — where is the business growing, which products drive it, where operations are failing, and what that failure costs in customer satisfaction.
 
 ---
 
 ## Power BI Dashboard
 
-Four-view analytical dashboard built on the pipeline's processed CSV outputs. The `.pbix` file is available in `dashboard_powerbi/` and can be opened directly in Power BI Desktop.
+Four-view analytical dashboard built on the pipeline's processed CSV outputs. The `.pbix` file is available at `dashboard_powerbi/olist_dashboard.pbix` and can be opened directly in Power BI Desktop.
 
 ![Power BI Dashboard](docs/visualizations/powerbi_dashboard.png)
 
-The Power BI dashboard replicates the same four analytical views with Power BI-native features: a line and clustered column chart for the revenue trend with dual Y-axes, a horizontal bar chart for top categories with Top N filtering applied at the visual level, a conditional-formatted bar chart for delivery by state using a blue-to-red color scale, and a clustered column chart for review score comparison with green/red color coding and a DAX-calculated Delivery Status column replacing the raw boolean field.
+The Power BI dashboard covers the same four analytical dimensions with Power BI-native features: a line and clustered column chart for the revenue trend with independent dual Y-axes, a horizontal clustered bar chart for top categories with visual-level Top N filtering, a conditional-formatted bar chart for delivery by state using a blue-to-red gradient scale driven by the late delivery rate value, and a clustered column chart for review score comparison with a DAX-calculated `Delivery Status` column replacing the raw boolean field. Data labels are enabled on all visuals for immediate readability.
 
 ---
 
 ## Streamlit App
 
-A 4-page interactive web application built with Streamlit that presents all visualizations alongside KPI metrics and key findings.
+A 4-page interactive web application built with Streamlit that presents all visualizations alongside KPI metrics and key findings. The app reads from pre-processed CSV files and displays pre-rendered PNG charts for fast loading.
 
 | Page | Content |
 |---|---|
@@ -267,9 +334,11 @@ A 4-page interactive web application built with Streamlit that presents all visu
 
 ## CI/CD Pipeline
 
-Automated testing runs on every push to the `main` branch via GitHub Actions. The pipeline installs dependencies, runs 12 unit tests covering data cleaning logic and business rules, and fails the build if any test does not pass.
+Automated testing runs on every push to the `main` branch via GitHub Actions. The pipeline installs Python dependencies, executes 12 unit tests with pytest, and fails the build if any test does not pass — preventing broken code from reaching the main branch.
 
-**Tests cover:** negative price detection, review score range validation, delivery days validation, null order ID detection, boolean type validation, null category detection after cleaning, freight value validation, revenue calculation correctness, timestamp extraction, duplicate detection, and late delivery rate calculation.
+![CI/CD Pipeline](docs/visualizations/streamlit_screenshots/page2_revenue_products.png)
+
+**Tests cover:** no negative or zero prices, review score range validation (1–5), positive delivery days, no null order IDs, boolean type validation for `is_late`, no null category names after cleaning, non-negative freight values, revenue calculation correctness, month/year extraction from timestamps, duplicate order ID detection, and late delivery rate calculation logic.
 
 ```yaml
 on:
@@ -286,9 +355,9 @@ on:
 ```
 ecommerce-analytics-olist/
 ├── scripts/
-│   ├── upload_to_s3.py              # Upload raw CSVs to AWS S3
+│   ├── upload_to_s3.py              # Upload raw CSVs to AWS S3 (optional)
 │   ├── load_to_postgres.py          # Ingest all 9 CSVs into PostgreSQL
-│   ├── clean_data.py                # Clean all tables → 6 clean tables
+│   ├── clean_data.py                # Clean all tables → 6 clean tables (Silver layer)
 │   ├── validate_data.py             # 18 automated data quality checks
 │   ├── generate_visualizations.py   # Generate 7 Matplotlib/Seaborn PNGs
 │   └── export_dashboard_data.py     # Export 3 dashboard-ready CSVs
@@ -297,7 +366,7 @@ ecommerce-analytics-olist/
 │   └── analysis_queries.sql         # 8 business analysis SQL queries
 ├── data/
 │   ├── raw/                         # 9 Olist CSVs (not tracked in Git)
-│   └── processed/                   # Dashboard-ready CSVs (tracked)
+│   └── processed/                   # Dashboard-ready CSVs (tracked in Git)
 │       ├── dashboard_data.csv       # Main flat table (110,814 rows, 21 cols)
 │       ├── monthly_summary.csv      # Monthly aggregates (23 rows)
 │       └── state_summary.csv        # State-level aggregates (27 rows)
@@ -325,15 +394,15 @@ ecommerce-analytics-olist/
 │           ├── page3_delivery_performance.png
 │           └── page4_customer_insights.png
 ├── tests/
-│   └── test_cleaning.py             # 12 unit tests
+│   └── test_cleaning.py             # 12 pytest unit tests
 ├── .github/
 │   └── workflows/
 │       └── ci.yml                   # GitHub Actions CI/CD pipeline
 ├── .streamlit/
 │   └── config.toml                  # Light theme configuration
-├── docker-compose.yml               # PostgreSQL service definition
+├── docker-compose.yml               # PostgreSQL 15 service definition
 ├── requirements.txt                 # Streamlit Cloud dependencies
-├── .env.example                     # Environment variable template
+├── .env.example                     # Environment variable template (no secrets)
 └── README.md
 ```
 
@@ -346,7 +415,7 @@ ecommerce-analytics-olist/
 1. Download the Olist dataset from [Kaggle — Brazilian E-Commerce](https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce)
 2. Place all 9 CSV files inside `data/raw/`
 
-> The raw CSV files are excluded from Git via `.gitignore` because of their size. They must be downloaded manually before running the pipeline.
+> The raw CSV files are excluded from Git via `.gitignore` due to their size. They must be downloaded manually before running the pipeline.
 
 ---
 
@@ -359,9 +428,14 @@ cd ecommerce-analytics-olist
 
 ### Step 2 — Configure environment
 
-Copy `.env.example` to `.env` and fill in your PostgreSQL and AWS credentials:
+Copy `.env.example` to `.env` and fill in your credentials:
 
+```bash
+copy .env.example .env   # Windows
+cp .env.example .env     # macOS / Linux
 ```
+
+```env
 POSTGRES_HOST=localhost
 POSTGRES_PORT=5432
 POSTGRES_DB=olist_db
@@ -372,6 +446,8 @@ AWS_REGION=eu-west-1
 AWS_ACCESS_KEY_ID=your-key
 AWS_SECRET_ACCESS_KEY=your-secret
 ```
+
+> AWS credentials are only needed for `upload_to_s3.py`. All other scripts work without them.
 
 ### Step 3 — Create and activate virtual environment
 
@@ -393,6 +469,8 @@ pip install pandas numpy matplotlib seaborn sqlalchemy psycopg2-binary python-do
 
 ### Step 5 — Start PostgreSQL container
 
+Make sure Docker Desktop is running, then:
+
 ```bash
 docker-compose up -d
 ```
@@ -400,13 +478,13 @@ docker-compose up -d
 ### Step 6 — Run the pipeline in order
 
 ```bash
-# Optional — upload raw data to AWS S3
+# Optional — upload raw data to AWS S3 (requires AWS credentials)
 python scripts/upload_to_s3.py
 
-# Load all 9 tables into PostgreSQL
+# Load all 9 raw tables into PostgreSQL
 python scripts/load_to_postgres.py
 
-# Clean all tables → 6 clean tables
+# Clean all tables and produce 6 clean tables (Silver layer)
 python scripts/clean_data.py
 
 # Run 18 data quality validation checks
@@ -422,11 +500,19 @@ python scripts/export_dashboard_data.py
 streamlit run dashboard_streamlit/app.py
 ```
 
+**Expected outputs after all steps:**
+- PostgreSQL database with 9 raw tables + 6 clean tables
+- `data/processed/` — 3 dashboard-ready CSV files
+- `docs/visualizations/` — 7 PNG chart files
+- Streamlit app running at `http://localhost:8501`
+
 ### Step 7 — Run unit tests
 
 ```bash
 pytest tests/ -v
 ```
+
+All 12 tests should pass in under 5 seconds.
 
 ---
 
@@ -448,9 +534,9 @@ pytest tests/ -v
 
 | File | Rows | Description |
 |---|---|---|
-| `dashboard_data.csv` | 110,814 | Main flat analytical table joining all clean tables |
-| `monthly_summary.csv` | 23 | Monthly aggregates: revenue, orders, delivery, reviews |
-| `state_summary.csv` | 27 | State-level aggregates: revenue, late rate, avg delivery |
+| `dashboard_data.csv` | 110,814 | Main flat analytical table joining all 6 clean tables |
+| `monthly_summary.csv` | 23 | Monthly aggregates: revenue, orders, delivery days, late rate, avg review |
+| `state_summary.csv` | 27 | State-level aggregates: revenue, orders, late rate, avg delivery, avg review |
 
 ---
 
@@ -458,32 +544,32 @@ pytest tests/ -v
 
 **Data Analysis:**
 - Exploratory data analysis on a real multi-table relational e-commerce dataset
-- Missing value handling with three distinct professional strategies (filter, impute, retain)
-- Feature engineering: delivery duration, lateness flag, time-based aggregations
-- Business insight extraction across revenue, delivery performance, and customer satisfaction dimensions
+- Missing value handling with three distinct professional strategies (filter, impute, retain) applied per-context
+- Feature engineering: delivery duration in days, lateness boolean flag, time-based aggregations
+- Business insight extraction across revenue trends, delivery performance, and customer satisfaction
 
 **SQL:**
-- Multi-table `JOIN` queries across 6 related tables with foreign key relationships
+- Multi-table `JOIN` queries across 6 related tables with enforced foreign key relationships
 - `GROUP BY` aggregations across revenue, delivery, seller, payment, and time dimensions
 - Subqueries for repeat purchase rate calculation
 - `CASE WHEN` for conditional aggregation (late delivery rate, low score percentage)
 - `COALESCE` for null-safe category joins across translated category names
 
 **Data Engineering:**
-- ETL pipeline design with modular single-responsibility scripts
+- ETL pipeline with modular single-responsibility scripts and clear execution order
 - Bronze/Silver architecture with raw and clean table separation in PostgreSQL
-- AWS S3 integration for raw data lake storage
-- 18-check automated data quality validation layer covering four check categories
+- AWS S3 integration for raw data lake storage using boto3
+- 18-check automated data quality validation layer across four check categories
 - Docker containerization for reproducible PostgreSQL environment
 
 **Business Intelligence:**
-- Tableau Public: dual-axis trend chart, gradient color encoding, 4-view dashboard assembly
-- Power BI: DAX calculated columns, conditional formatting, dual Y-axis, Top N filtering
+- Tableau Public: dual-axis trend chart, gradient color encoding, 4-view dashboard assembly and publishing
+- Power BI: DAX calculated columns, conditional formatting, dual Y-axis, visual-level Top N filtering
 - Streamlit: multi-page application with cached data loading and pre-rendered chart display
-- Dashboard design: KPI metrics, color-coded legends, consistent cross-platform visual language
+- Dashboard design: KPI metric cards, color-coded legends, consistent visual language across three platforms
 
 **Software Engineering:**
-- GitHub Actions CI/CD with 12 pytest unit tests on every push
+- GitHub Actions CI/CD with 12 pytest unit tests triggered on every push to main
 - Python virtual environment and dependency management
 - `.env` based credential management with `.env.example` public template
 - Clean project structure separating scripts, SQL, data, dashboards, tests, and documentation
@@ -496,8 +582,8 @@ pytest tests/ -v
 - **dbt transformation layer** — replace raw SQL cleaning with dbt models for better versioning and testing
 - **Streamlit Cloud deployment** — resolve Python 3.14 compatibility issues to publish the live app publicly
 - **Forecasting layer** — add a time-series demand forecast using Prophet to predict future monthly order volume
-- **Geospatial choropleth map** — visualize revenue and late delivery rate by state on a Brazil map
-- **Seller segmentation** — cluster sellers by performance metrics using K-means
+- **Geospatial choropleth map** — visualize revenue and late delivery rate by state on an interactive Brazil map
+- **Seller segmentation** — cluster sellers by performance metrics (revenue, delivery time, review score) using K-means
 - **Power BI Service** — publish the Power BI dashboard to Power BI Service for a live public URL
 
 ---
