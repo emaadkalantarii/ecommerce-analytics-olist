@@ -578,6 +578,7 @@ All 12 tests should pass in under 5 seconds.
 
 ## Future Improvements
 
+- **Full Docker pipeline automation** — write a Python pipeline container in docker-compose that waits for PostgreSQL readiness and then runs all ETL scripts in sequence automatically, enabling single-command end-to-end execution
 - **Airflow orchestration** — schedule the full pipeline to run weekly with automated data refresh
 - **dbt transformation layer** — replace raw SQL cleaning with dbt models for better versioning and testing
 - **Streamlit Cloud deployment** — resolve Python 3.14 compatibility issues to publish the live app publicly
