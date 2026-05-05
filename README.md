@@ -298,7 +298,7 @@ A bar chart showing the count of orders at each review score from 1 to 5, color-
 
 Four-view interactive dashboard published at the live URL above. The workbook file is also saved at `dashboard_tableau/olist_dashboard.twbx`.
 
-![Tableau Dashboard](docs/visualizations/streamlit_screenshots/page1_overview.png)
+![Tableau Dashboard](docs/visualizations/tableau_dashboard.png)
 
 The dashboard presents four complementary analytical views: a dual-axis revenue and order volume trend across the full 2016–2018 period (top), a ranked horizontal bar chart of top product categories by revenue with dollar labels (bottom left), a gradient-colored bar chart of late delivery rates by state where darker red indicates worst-performing states (bottom center), and a side-by-side bar chart comparing average review scores for late versus on-time deliveries with green/red color coding (bottom right). Together these four views form a complete analytical narrative — where is the business growing, which products drive it, where operations are failing, and what that failure costs in customer satisfaction.
 
@@ -336,7 +336,7 @@ A 4-page interactive web application built with Streamlit that presents all visu
 
 Automated testing runs on every push to the `main` branch via GitHub Actions. The pipeline installs Python dependencies, executes 12 unit tests with pytest, and fails the build if any test does not pass — preventing broken code from reaching the main branch.
 
-![CI/CD Pipeline](docs/visualizations/streamlit_screenshots/page2_revenue_products.png)
+![CI/CD Pipeline](docs/visualizations/ci_pipeline.png)
 
 **Tests cover:** no negative or zero prices, review score range validation (1–5), positive delivery days, no null order IDs, boolean type validation for `is_late`, no null category names after cleaning, non-negative freight values, revenue calculation correctness, month/year extraction from timestamps, duplicate order ID detection, and late delivery rate calculation logic.
 
