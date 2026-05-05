@@ -237,6 +237,10 @@ AWS_SECRET_ACCESS_KEY=your_secret_access_key
 
 **S3 is optional.** If you do not have AWS credentials, skip `upload_to_s3.py` and run the rest of the pipeline using local files only — all other scripts read from `data/raw/` directly and do not require S3 access.
 
+![AWS S3 Bucket](docs/visualizations/s3_bucket.png)
+
+All 9 raw Olist CSV files uploaded to the S3 bucket under the `raw/` prefix. The bucket acts as the Bronze layer of the data lake — a persistent, cloud-accessible copy of the original source data that is never modified after upload. This mirrors how real analytics teams store raw data separately from processed outputs, enabling full pipeline reproducibility from source.
+
 ---
 
 ## Python Visualizations
@@ -325,10 +329,31 @@ A 4-page interactive web application built with Streamlit that presents all visu
 | Delivery Performance | Delivery KPIs, late delivery by state, review vs delivery impact |
 | Customer Insights | Review distribution, orders and revenue by state, avg review by state |
 
+### Page 1 — Overview
 ![Streamlit Overview](docs/visualizations/streamlit_screenshots/page1_overview.png)
+
+The landing page presents five KPI cards at the top — total orders, total revenue, average review score, late delivery rate, and repeat purchase rate — giving the user an immediate quantified summary of business health. Below the KPIs, the monthly revenue trend chart shows the full 2016–2018 growth arc. A key findings panel at the bottom uses color-coded callouts (green for positive findings, red for critical issues, amber for opportunities) to communicate the most important analytical conclusions in plain business language without requiring the user to interpret charts.
+
+---
+
+### Page 2 — Revenue & Products
 ![Streamlit Revenue](docs/visualizations/streamlit_screenshots/page2_revenue_products.png)
+
+This page answers the product strategy question. The top 15 categories by revenue chart immediately shows which categories are generating the most value and how concentrated revenue is at the top. The payment method analysis below shows both transaction share (pie) and total revenue value (bar) side by side, making it clear that credit card dominates both volume and value. The hourly order volume chart at the bottom highlights the 10:00–21:00 peak window with color coding, giving marketing and operations teams a concrete scheduling signal.
+
+---
+
+### Page 3 — Delivery Performance
 ![Streamlit Delivery](docs/visualizations/streamlit_screenshots/page3_delivery_performance.png)
+
+This page addresses the most critical operational finding in the dataset. Three KPI cards at the top show average delivery time, total late order count, and on-time rate. The late delivery rate by state chart uses coral/blue color coding against a national average reference line to immediately surface which states are underperforming — AL at 24.1% and MA at 20.2% stand out visually. The impact of late delivery on review scores chart below quantifies the consequence: on-time orders average 4.21 stars while late orders average 2.55, with 46% of late orders receiving a 1-star review.
+
+---
+
+### Page 4 — Customer Insights
 ![Streamlit Customers](docs/visualizations/streamlit_screenshots/page4_customer_insights.png)
+
+This page focuses on customer behavior and satisfaction patterns. Three KPI cards show unique states covered, average review score, and 5-star review rate. The review score distribution chart uses a three-tier color scheme — green for positive (4–5 stars), orange for neutral (3 stars), coral for negative (1–2 stars) — and includes exact counts on each bar. The bimodal shape of the distribution (large 5-star and 1-star groups with smaller middle scores) is clearly visible and supports the conclusion that customers review most strongly when their experience is either excellent or poor.
 
 ---
 
