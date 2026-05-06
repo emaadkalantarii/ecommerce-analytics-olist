@@ -78,7 +78,7 @@ SELECT
     ROUND(SUM(payment_value)::numeric, 2)       AS total_value,
     ROUND(AVG(payment_value)::numeric, 2)       AS avg_transaction_value,
     ROUND(AVG(payment_installments)::numeric, 1) AS avg_installments
-FROM order_payments
+FROM order_payments_clean
 WHERE payment_type != 'not_defined'
 GROUP BY 1
 ORDER BY total_transactions DESC;
